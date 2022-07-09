@@ -53,77 +53,8 @@ if do_plot:
     plt.show()
 
 
-# 2) Bounday conditions
+# 2) Finite element spaces and functions
 # ------------------------------------------------------
-
-# Define classes of boundaries
-class LeftWall(SubDomain):
-    def inside(self, x, on_boundary):
-        return (near(x[0], X0))
-
-class RightWall(SubDomain):
-    def inside(self, x, on_boundary):
-        return (near(x[0], X1))
-
-class BottomWall(SubDomain):
-    def inside(self, x, on_boundary):
-        return (near(x[1], Y0))
-
-class TopWall(SubDomain):
-    def inside(self, x, on_boundary):
-        return (near(x[1], Y1))
-
-class ShipWall(SubDomain):
-    def inside(self, x, on_boundary):
-        return on_boundary and (not near(x[0], X0)) and (not near(x[1], Y0)) and \
-            (not near(x[0], X1)) and (not near(x[1], Y1))
-
-
-# Define boundaries of each class
-top_wall = TopWall()
-bottom_wall = BottomWall()
-left_wall = LeftWall()
-right_wall = RightWall()
-ship_wall = ShipWall()
-
-#Function definined as:
-#  0: interior edges/faces
-#  id: bounary edges/faces, where id is a humber representing each boundary
-boundaries = MeshFunction('size_t', mesh, mesh.topology().dim()-1, 0)
-
-# Id names for easyness
-top_id = 1
-bottom_id = 2
-left_id  = 3
-right_id = 4
-ship_id = 5
-
-# Mark edges/faces
-top_wall.mark(boundaries, top_id)
-bottom_wall.mark(boundaries, bottom_id)
-left_wall.mark(boundaries, left_id)
-right_wall.mark(boundaries, right_id)
-ship_wall.mark(boundaries, ship_id)
-
-# For integration on all boundaries
-ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
-
-# Save for testing
-boundary_file = File("boundaries.pvd")
-boundary_file << boundaries
-
-# 3) Define data and coefficients
-# ------------------------------------------------------
-
-t = 0.0; dt = 0.01;
-T = 1
-force = Constant((0., 0.))  # External force
-viscosity = Constant(1)  # Viscosity coefficient
-nn = FacetNormal(mesh)
-#endregion----------------------------------------
-
-
-#region: define functionspaces and functions-------
 
 #define mixed functionspace
 P2 = VectorElement("CG", mesh.ufl_cell(), 2)
@@ -148,43 +79,100 @@ u0, p0 = split(tentative)
 #define trial and test functions
 (u, p) = TrialFunctions(X) #for velocity, pressure
 (v, q) = TestFunctions(X)
-#endregion-----------------------------------------
 
-#region: define boundary conditions----------------
+# 3) Define data and coefficients
+# ------------------------------------------------------
+
+t = 0.0; dt = 0.01;
+T = 1
+force = Constant((0., 0.))  # External force
+viscosity = Constant(1.00)  # Viscosity coefficient
+inflow_velicity = Constant((0.1, 0.))
+nn = FacetNormal(mesh)
+
 pd=Constant(1)
-# bcp1 = DirichletBC(X.sub(1), pd, boundaries, left)
-# bcp2 = DirichletBC(X.sub(1), Constant(0), boundaries, right)
 
-# bcu1 = DirichletBC(X.sub(0), (0,0), boundaries, Top)
-# bcu2 = DirichletBC(X.sub(0), (0,0), boundaries, Bottom)
+# 4) Define bounday conditions
+# ------------------------------------------------------
 
-bcp1 = DirichletBC(X.sub(0), (1, 0), boundaries, left_id)
-# bcp2 = DirichletBC(X.sub(0), (0, 0), boundaries, right_id)
+# Define classes of boundaries
+class LeftWall(SubDomain):
+    def inside(self, x, on_boundary):
+        return (near(x[0], X0))
 
-bcu1 = DirichletBC(X.sub(0), (0, 0), boundaries, top_id)
-bcu2 = DirichletBC(X.sub(0), (0, 0), boundaries, bottom_id)
+class RightWall(SubDomain):
+    def inside(self, x, on_boundary):
+        return (near(x[0], X1))
 
-bcu_ship = DirichletBC(X.sub(0), (0, 0), boundaries, ship_id)
+class BottomWall(SubDomain):
+    def inside(self, x, on_boundary):
+        return (near(x[1], Y0))
 
-bc = [bcp1, bcu1, bcu2, bcu_ship]
+class TopWall(SubDomain):
+    def inside(self, x, on_boundary):
+        return (near(x[1], Y1))
 
+class ShipHull(SubDomain):
+    def inside(self, x, on_boundary):
+        return on_boundary and (not near(x[0], X0)) and (not near(x[1], Y0)) and \
+            (not near(x[0], X1)) and (not near(x[1], Y1))
 
+# Define boundaries of each class
+top_wall = TopWall()
+bottom_wall = BottomWall()
+left_wall = LeftWall()
+right_wall = RightWall()
+ship_hull = ShipHull()
 
-F1 = dot((u - u0) / dt, v)*dx
-F1 += dot(dot(u, nabla_grad(u0)), v)*dx
-F1 += inner(grad(u), grad(v))*dx
-F1 -= dot(force, v)*dx
-F1 += inner(grad(p), v)*dx
-F1 += div(u)*q*dx
-F1 += 1.e-15*p*q*dx
+#Function definined as:
+#  0: interior edges/faces
+#  id: bounary edges/faces, where id is a humber representing each boundary
+boundaries = MeshFunction('size_t', mesh, mesh.topology().dim()-1, 0)
+
+# Id names for easyness
+top_id = 1
+bottom_id = 2
+left_id  = 3
+right_id = 4
+ship_id = 5
+
+# Mark edges/faces
+top_wall.mark(boundaries, top_id)
+bottom_wall.mark(boundaries, bottom_id)
+left_wall.mark(boundaries, left_id)
+right_wall.mark(boundaries, right_id)
+ship_hull.mark(boundaries, ship_id)
+
+# For integration on all boundaries
+ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
+
+# Save for testing
+boundary_file = File("boundaries.pvd")
+boundary_file << boundaries
+
+bc_left = DirichletBC(X.sub(0), inflow_velicity, boundaries, left_id)
+bc_top = DirichletBC(X.sub(0), (0, 0), boundaries, top_id)
+bc_bottom = DirichletBC(X.sub(0), (0, 0), boundaries, bottom_id)
+bc_ship = DirichletBC(X.sub(0), (0, 0), boundaries, ship_id)
+dirichlet_bc = [bc_left, bc_top, bc_bottom] #, bc_ship]
+
+# 5) Solve varitatioal formulation at time iterations
+# ------------------------------------------------------
+
+# Variational formultion
+F1 = dot((u - u0) / dt, v)*dx + \
+    dot(dot(u, nabla_grad(u0)), v)*dx + \
+    viscosity*inner(grad(u), grad(v))*dx + \
+    dot(force, v)*dx + \
+    inner(grad(p), v)*dx + \
+    div(u)*q*dx + \
+    1.e-10*p*q*dx
     # + dot(nabla_grad(p), nabla_grad(q))*dx\    # + (dot(p*n, v)- dot(nu*nabla_grad(U)*n, v))*ds(inlet) \
     # + (dot(p*n, v)- dot(nu*nabla_grad(U)*n, v))*ds(right)
 
 a1 = lhs(F1)
 L1 = rhs(F1)
 
-
-#region: solve problem---------------------------
 
 # set_log_active(False)
 # bar = Bar('Processing', max=T/dt)
@@ -200,7 +188,7 @@ while t + dt < T + DOLFIN_EPS:
     tentative.vector()[:] = xh.vector()
     u0, p0 = split(tentative)
 
-    solve(a1 == L1, xh, bc)
+    solve(a1 == L1, xh, dirichlet_bc)
     u_vtk << (xh.sub(0), t)
     p_vtk << (xh.sub(1), t)
 
@@ -210,7 +198,6 @@ while t + dt < T + DOLFIN_EPS:
     #update
     # bar.next()
 # bar.finish()
-#endregion-----------------------------------------
 
 
 # >>>> end
