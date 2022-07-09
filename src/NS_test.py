@@ -9,7 +9,7 @@ import numpy as np
 
 # Print log messages only from the root process in parallel
 parameters["std_out_all_processes"] = False
-do_plot = True
+do_plot = False
 
 # 1) Mesh
 # ------------------------------------------------------
@@ -67,14 +67,16 @@ xh = Function(X)
 # xh = project( Expression((('0*x[0]*x[1]', '0*x[0]*x[1]'), '0*x[0]'), degree=2), X)
 f1 = Expression( ("0", "0"), degree=2)
 V1 = VectorFunctionSpace(mesh, "CG", 2)
-xh.sub(0, deepcopy=False).assign(interpolate(f1, V1))
 f2 = Expression( ("0"), degree=2)
 Q1 = FunctionSpace(mesh, "CG", 1)
-xh.sub(1, deepcopy=False).assign(interpolate(f2, Q1))
+# Initial value for u ( (0, 0) )
+xh.sub(0, deepcopy=False).assign(interpolate(f1, V1))
+# Initial value for p
+# xh.sub(1, deepcopy=False).assign(interpolate(f2, Q1))
 
 # tentative = interpolate(Constant((0,0,0)), X) #Function(X)
-tentative = Function(X)
-u0, p0 = split(tentative)
+last_solution = Function(X)
+u0, p0 = split(last_solution)
 
 #define trial and test functions
 (u, p) = TrialFunctions(X) #for velocity, pressure
@@ -84,11 +86,12 @@ u0, p0 = split(tentative)
 # ------------------------------------------------------
 
 t = 0.0; dt = 0.01;
-T = 1
+T = 0.1 #1
 force = Constant((0., 0.))  # External force
-viscosity = Constant(1.00)  # Viscosity coefficient
-inflow_velicity = Constant((0.1, 0.))
-nn = FacetNormal(mesh)
+viscosity = Constant(0.001)  # Viscosity coefficient
+inflow_velocity = Expression(("0.001*(x[1]-Y0)*(Y1-x[1])", "0."),
+                             Y0=Y0, Y1=Y1, degree=4)
+normal = FacetNormal(mesh)
 
 pd=Constant(1)
 
@@ -124,10 +127,14 @@ left_wall = LeftWall()
 right_wall = RightWall()
 ship_hull = ShipHull()
 
-#Function definined as:
+# Function definined as:
 #  0: interior edges/faces
 #  id: bounary edges/faces, where id is a humber representing each boundary
-boundaries = MeshFunction('size_t', mesh, mesh.topology().dim()-1, 0)
+all_boundaries = MeshFunction('size_t', mesh, mesh.topology().dim()-1, 0)
+# Function != 0 on outflow bounary (right wall), 0 on other edges/faces
+outflow_boundary = MeshFunction('size_t', mesh, mesh.topology().dim()-1, 0)
+# Function != 0 on ship hull bounary, 0 on other edges/faces
+ship_boundary = MeshFunction('size_t', mesh, mesh.topology().dim()-1, 0)
 
 # Id names for easyness
 top_id = 1
@@ -135,42 +142,65 @@ bottom_id = 2
 left_id  = 3
 right_id = 4
 ship_id = 5
+walls_id = [1, 2, 3, 4]
 
 # Mark edges/faces
-top_wall.mark(boundaries, top_id)
-bottom_wall.mark(boundaries, bottom_id)
-left_wall.mark(boundaries, left_id)
-right_wall.mark(boundaries, right_id)
-ship_hull.mark(boundaries, ship_id)
+top_wall.mark(all_boundaries, top_id)
+bottom_wall.mark(all_boundaries, bottom_id)
+left_wall.mark(all_boundaries, left_id)
+right_wall.mark(all_boundaries, right_id)
+ship_hull.mark(all_boundaries, ship_id)
 
-# For integration on all boundaries
-ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
+right_wall.mark(outflow_boundary, right_id)
+ship_hull.mark(ship_boundary, ship_id)
+
+# For integration on boundaries
+# ds = Measure('ds', domain=mesh, subdomain_data=all_boundaries)
+# dsOut = Measure('ds', domain=mesh, subdomain_data=outflow_boundary)
+# dsShip = Measure('ds', domain=mesh, subdomain_data=ship_boundary)
+# ds = Measure('ds', domain=mesh, subdomain_data=all_boundaries)
+# dsOut = Measure('ds', domain=mesh, subdomain_data=all_boundaries, subdomain_id=right_wall)
+# dsShip = Measure('ds', domain=mesh, subdomain_data=all_boundaries, subdomain_id=ship_wall)
+ds = Measure('ds', domain=mesh, subdomain_data=all_boundaries)
+dsOut = ds(subdomain_id=right_id)
+dsShip = ds(subdomain_id=ship_id)
 
 # Save for testing
-boundary_file = File("boundaries.pvd")
-boundary_file << boundaries
+boundary_file = File("all_boundaries.pvd")
+boundary_file << all_boundaries
+boundary_file = File("out_boundaries.pvd")
+boundary_file << outflow_boundary
+boundary_file = File("ship_boundaries.pvd")
+boundary_file << ship_boundary
 
-bc_left = DirichletBC(X.sub(0), inflow_velicity, boundaries, left_id)
-bc_top = DirichletBC(X.sub(0), (0, 0), boundaries, top_id)
-bc_bottom = DirichletBC(X.sub(0), (0, 0), boundaries, bottom_id)
-bc_ship = DirichletBC(X.sub(0), (0, 0), boundaries, ship_id)
+bc_left = DirichletBC(X.sub(0), inflow_velocity, all_boundaries, left_id)
+bc_top = DirichletBC(X.sub(0), (0, 0), all_boundaries, top_id)
+bc_bottom = DirichletBC(X.sub(0), (0, 0), all_boundaries, bottom_id)
+bc_ship = DirichletBC(X.sub(0), (0, 0), all_boundaries, ship_id)
 dirichlet_bc = [bc_left, bc_top, bc_bottom] #, bc_ship]
 
 # 5) Solve varitatioal formulation at time iterations
 # ------------------------------------------------------
+    # - p*div(v)*dx \
+    # + inner(v,normal)*p*dsOut \
+    # - viscosity*inner(grad(u.sub(0)), normal)*v.sub(0)*dsShip \
 
 # Variational formultion
-F1 = dot((u - u0) / dt, v)*dx + \
-    dot(dot(u, nabla_grad(u0)), v)*dx + \
-    viscosity*inner(grad(u), grad(v))*dx + \
-    dot(force, v)*dx + \
-    inner(grad(p), v)*dx + \
-    div(u)*q*dx + \
-    1.e-10*p*q*dx
+F1 = dot((u - u0) / dt, v)*dx \
+    + dot(dot(u, nabla_grad(u0)), v)*dx \
+    + viscosity*inner(grad(u), grad(v))*dx \
+    + dot(force, v)*dx \
+    + inner(grad(p), v)*dx \
+    + 1.e-5*p*q*dx
     # + dot(nabla_grad(p), nabla_grad(q))*dx\    # + (dot(p*n, v)- dot(nu*nabla_grad(U)*n, v))*ds(inlet) \
     # + (dot(p*n, v)- dot(nu*nabla_grad(U)*n, v))*ds(right)
 
-a1 = lhs(F1)
+F_div_v1 = div(u)*q*dx
+F_div_v2 = - inner(u, grad(q))*dx + inner(u, normal)*q*ds
+
+F_ship_bnd = - viscosity*inner(dot(grad(u), normal), v)*dsShip - inner(u, normal)*q*dsShip
+
+a1 = lhs(F1) + lhs(F_div_v2) + lhs(F_ship_bnd)
 L1 = rhs(F1)
 
 
@@ -185,8 +215,8 @@ while t + dt < T + DOLFIN_EPS:
     dt = min(T-t, dt)
     t += dt
     print(f"Time iteration {m}, t={t}")
-    tentative.vector()[:] = xh.vector()
-    u0, p0 = split(tentative)
+    last_solution.vector()[:] = xh.vector()
+    u0, p0 = split(last_solution)
 
     solve(a1 == L1, xh, dirichlet_bc)
     u_vtk << (xh.sub(0), t)
