@@ -14,19 +14,19 @@ do_plot = False
 # 1) Mesh
 # ------------------------------------------------------
 
-# Function for build .xmdf file from .msh one
-def convert_mesh_to_xdmf(input_file, output_file):
-    import numpy as np
-    import meshio
-    msh = meshio.read(input_mesh_file)
-    clls = np.vstack((
-        cell.data for cell in msh.cells if cell.type == "triangle"
-    ))  # only write 2D cells
-    meshio.xdmf.write(output_file, meshio.Mesh(msh.points, cells = {"triangle": clls}))
-
-# Define mesh file and eventually rebuild mesh
 mesh_dir = "../mesh/"
+mesh_file = mesh_dir + "rectang_circ_hole.xml"
+mesh_file = mesh_dir + "rectang_eliptic_holes.xml"
 
+# # Function for build .xmdf file from .msh one
+# def convert_mesh_to_xdmf(input_file, output_file):
+#     import numpy as np
+#     import meshio
+#     msh = meshio.read(input_mesh_file)
+#     clls = np.vstack((
+#         cell.data for cell in msh.cells if cell.type == "triangle"
+#     ))  # only write 2D cells
+#     meshio.xdmf.write(output_file, meshio.Mesh(msh.points, cells = {"triangle": clls}))
 # mesh_file = mesh_dir + "rectang_circ_hole.xdmf"
 # rebuild_mesh = False
 # if rebuild_mesh:
@@ -38,7 +38,6 @@ mesh_dir = "../mesh/"
 #     infile.read(mesh)
 
 # Read mesh from .xml file
-mesh_file = mesh_dir + "rectang_circ_hole.xml"
 mesh = Mesh(mesh_file)
 
 x_coords = mesh.coordinates()[:, 0]
@@ -85,11 +84,11 @@ u0, p0 = split(last_solution)
 # 3) Define data and coefficients
 # ------------------------------------------------------
 
-t = 0.0; dt = 0.01;
-T = 0.1 #1
+t = 0.0; dt = 0.1;
+T = 10 #1
 force = Constant((0., 0.))  # External force
-viscosity = Constant(0.001)  # Viscosity coefficient
-inflow_velocity = Expression(("0.001*(x[1]-Y0)*(Y1-x[1])", "0."),
+viscosity = 1.e-4  # Viscosity coefficient
+inflow_velocity = Expression(("0.01*sqrt((x[1]-Y0)*(Y1-x[1]))", "0."),
                              Y0=Y0, Y1=Y1, degree=4)
 normal = FacetNormal(mesh)
 
@@ -191,21 +190,24 @@ F1 = dot((u - u0) / dt, v)*dx \
     + viscosity*inner(grad(u), grad(v))*dx \
     + dot(force, v)*dx \
     + inner(grad(p), v)*dx \
-    + 1.e-5*p*q*dx
+    + 1.e-9*p*q*dx
     # + dot(nabla_grad(p), nabla_grad(q))*dx\    # + (dot(p*n, v)- dot(nu*nabla_grad(U)*n, v))*ds(inlet) \
     # + (dot(p*n, v)- dot(nu*nabla_grad(U)*n, v))*ds(right)
 
 F_div_v1 = div(u)*q*dx
 F_div_v2 = - inner(u, grad(q))*dx + inner(u, normal)*q*ds
-
 F_ship_bnd = - viscosity*inner(dot(grad(u), normal), v)*dsShip - inner(u, normal)*q*dsShip
 
 a1 = lhs(F1) + lhs(F_div_v2) + lhs(F_ship_bnd)
+# a1 = lhs(F1) + lhs(F_div_v1)
 L1 = rhs(F1)
 
 
 # set_log_active(False)
 # bar = Bar('Processing', max=T/dt)
+one = interpolate(Constant(1), Q1)
+measure_of_domain = assemble(one*dx)
+print("Measure of domain:", measure_of_domain)
 u_vtk = File("/tmp/u.pvd")
 p_vtk = File("/tmp/p.pvd")
 u_vtk << (xh.sub(0), t)
@@ -221,6 +223,12 @@ while t + dt < T + DOLFIN_EPS:
     solve(a1 == L1, xh, dirichlet_bc)
     u_vtk << (xh.sub(0), t)
     p_vtk << (xh.sub(1), t)
+
+    u_norm =  sqrt(assemble(inner(xh.sub(0), xh.sub(0))*dx))
+    print(f"  Reynolds number: (¿dimensions?) {u_norm*(X1-X0)/viscosity:.3e}")
+    print("  L2 norm of velocity:", u_norm)
+    print("  Mean of divergence:", abs(assemble(div(xh.sub(0))*dx))/measure_of_domain)
+    print("  Mean of p:", abs(assemble(xh.sub(1)*dx))/measure_of_domain)
 
     # u1.assign(xh.sub(0, deepcopy=True))
     # p1.assign(xh.sub(1, deepcopy=True))
