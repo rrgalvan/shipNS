@@ -7,6 +7,11 @@ from ufl import nabla_div, max_value
 # from progress.bar import Bar
 import numpy as np
 
+from flux_correct import (
+    assemble_mass_lumping,
+    compute_artificial_dffusion,
+)
+
 # Print log messages only from the root process in parallel
 parameters["std_out_all_processes"] = False
 do_plot = False
@@ -81,18 +86,31 @@ u0, p0 = split(last_solution)
 (u, p) = TrialFunctions(X) #for velocity, pressure
 (v, q) = TestFunctions(X)
 
+#>> free surface
+fs_fe_order = 1
+fs_Uh = FunctionSpace(mesh, "Lagrange", fs_fe_order)
+fs_Wh = VectorFunctionSpace(mesh, "DG", fs_fe_order-1)
+fs_velocity = Function(fs_Wh)
+eta, etab = TrialFunction(fs_Uh), TestFunction(fs_Uh)
+# Variable to store solution at two time steps
+eta1 = Function(fs_Uh)
+# Initial value for free surface
+eta_init = Expression("C1*exp(-C2*pow(x[0]-XX, 2))",
+                      C1=1, C2=1.e-1, XX=X0+0.025*(X1-X0), degree=4)
+eta1.assign(interpolate(eta_init, fs_Uh))
+#<< free surface
+
+
 # 3) Define data and coefficients
 # ------------------------------------------------------
 
 t = 0.0; dt = 0.1;
-T = 10 #1
+T = 10  # 1
 force = Constant((0., 0.))  # External force
 viscosity = 1.e-4  # Viscosity coefficient
 inflow_velocity = Expression(("0.01*sqrt((x[1]-Y0)*(Y1-x[1]))", "0."),
                              Y0=Y0, Y1=Y1, degree=4)
 normal = FacetNormal(mesh)
-
-pd=Constant(1)
 
 # 4) Define bounday conditions
 # ------------------------------------------------------
@@ -202,6 +220,13 @@ a1 = lhs(F1) + lhs(F_div_v2) + lhs(F_ship_bnd)
 # a1 = lhs(F1) + lhs(F_div_v1)
 L1 = rhs(F1)
 
+#>> free surface
+# Mass lumping matrix
+fs_M = assemble(eta*etab*dx)
+ML = assemble_mass_lumping(eta*etab*dx)
+eta_vtk = File("/tmp/eta.pvd")
+eta_vtk << (eta1, t)
+#<< free surface
 
 # set_log_active(False)
 # bar = Bar('Processing', max=T/dt)
@@ -229,6 +254,24 @@ while t + dt < T + DOLFIN_EPS:
     print("  L2 norm of velocity:", u_norm)
     print("  Mean of divergence:", abs(assemble(div(xh.sub(0))*dx))/measure_of_domain)
     print("  Mean of p:", abs(assemble(xh.sub(1)*dx))/measure_of_domain)
+
+    #>> free surface
+    #
+    # Bulid matrix and RHS
+    #
+    fs_velocity = project(xh.sub(0), fs_Wh)
+    # We integrate by parts the convection equation (assuming free divergence)
+    K = assemble(-inner(fs_velocity, grad(eta))*etab*dx)
+    # Flux correction: compte artificial diffusion and add it to advection
+    # matrix K (=> we eliminate all negative off-diagonal coefficients of K)
+    D, D_vals, _, _ = compute_artificial_dffusion(K)
+    KL = D + K
+    A = ML + dt*KL
+    b = ML * eta1.vector()
+    solve(A, eta1.vector(), b)
+    print(f"  eta max/min: {max(eta1.vector())}/{min(eta1.vector())}")
+    eta_vtk << (eta1, t)
+    #<< free surface
 
     # u1.assign(xh.sub(0, deepcopy=True))
     # p1.assign(xh.sub(1, deepcopy=True))
